@@ -192,8 +192,9 @@ def main(prompt: str):
             }
         ]
     )
-    #print(message)
-    llm_output = message.content
+
+    # Get the content from the message
+    llm_output = str(message.content)
     print(llm_output)
 
     import re
