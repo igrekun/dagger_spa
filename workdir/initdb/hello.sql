@@ -1,3 +1,5 @@
+CREATE DOMAIN "text/html" AS TEXT;
+
 -- Create web_anon role for unauthenticated access
 CREATE ROLE web_anon NOLOGIN;
 GRANT web_anon TO postgres; -- Grant to your database user (Replace postgres if needed)
@@ -67,6 +69,9 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql STABLE SECURITY DEFINER; -- Added STABLE and SECURITY DEFINER
 
+-- Add comment to specify the content type for this function
+COMMENT ON FUNCTION api.get_messages_html() IS 'description: Get all messages as HTML, @response_type text/html';
+
 GRANT EXECUTE ON FUNCTION api.get_messages_html() TO web_anon;
 
 -- Create function to get a single message row as HTML
@@ -104,6 +109,9 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql STABLE SECURITY DEFINER; -- Added STABLE and SECURITY DEFINER
 
+-- Add comment to specify the content type for this function
+COMMENT ON FUNCTION api.get_message_row_html(INTEGER) IS 'description: Get HTML for a single message row, @response_type text/html';
+
 GRANT EXECUTE ON FUNCTION api.get_message_row_html(INTEGER) TO web_anon;
 
 -- Create function to add a new message and return HTML row
@@ -119,6 +127,9 @@ BEGIN
     RETURN api.get_message_row_html(new_id); -- Call the function with schema prefix
 END;
 $$ LANGUAGE plpgsql VOLATILE SECURITY DEFINER; -- Added VOLATILE and SECURITY DEFINER
+
+-- Add comment to specify the content type for this function
+COMMENT ON FUNCTION api.add_message_html(TEXT) IS 'description: Add a new message and return its HTML, @response_type text/html';
 
 GRANT EXECUTE ON FUNCTION api.add_message_html(TEXT) TO web_anon;
 
@@ -155,6 +166,9 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql STABLE SECURITY DEFINER; -- Added STABLE and SECURITY DEFINER
 
+-- Add comment to specify the content type for this function
+COMMENT ON FUNCTION api.get_edit_form_html(INTEGER) IS 'description: Get HTML form for editing a message, @response_type text/html';
+
 GRANT EXECUTE ON FUNCTION api.get_edit_form_html(INTEGER) TO web_anon;
 
 -- Create function to update a message and return the HTML row
@@ -172,6 +186,9 @@ BEGIN
     RETURN api.get_message_row_html(p_id); -- Call the function with schema prefix
 END;
 $$ LANGUAGE plpgsql VOLATILE SECURITY DEFINER; -- Added VOLATILE and SECURITY DEFINER
+
+-- Add comment to specify the content type for this function
+COMMENT ON FUNCTION api.update_message_html(INTEGER, TEXT) IS 'description: Update a message and return its HTML, @response_type text/html';
 
 GRANT EXECUTE ON FUNCTION api.update_message_html(INTEGER, TEXT) TO web_anon;
 
@@ -212,6 +229,9 @@ BEGIN
     RETURN COALESCE(result, '<tr><td colspan="4">No messages found matching search.</td></tr>');
 END;
 $$ LANGUAGE plpgsql STABLE SECURITY DEFINER; -- Added STABLE and SECURITY DEFINER
+
+-- Add comment to specify the content type for this function
+COMMENT ON FUNCTION api.search_messages_html(TEXT) IS 'description: Search messages and return results as HTML, @response_type text/html';
 
 GRANT EXECUTE ON FUNCTION api.search_messages_html(TEXT) TO web_anon;
 
@@ -300,6 +320,9 @@ BEGIN
 </html>';
 END;
 $$ LANGUAGE plpgsql STABLE SECURITY DEFINER; -- Added STABLE and SECURITY DEFINER
+
+-- Add comment to specify the content type for this function
+COMMENT ON FUNCTION api.get_index_html() IS 'description: Get the main HTML page, @response_type text/html';
 
 GRANT EXECUTE ON FUNCTION api.get_index_html() TO web_anon;
 
