@@ -1,0 +1,28 @@
+version: '3'
+
+services:
+  postgrest-db:
+    container_name: postgrest-db
+    image: postgres:17.0-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=postgres
+      - DB_ANON_ROLE=web_anon
+      - DB_SCHEMA=api
+    volumes:
+      - "./initdb:/docker-entrypoint-initdb.d"
+    restart: always
+
+  postgrest:
+    container_name: postgrest
+    image: postgrest/postgrest:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - PGRST_DB_URI=postgres://postgres:postgres@postgrest-db:5432/postgres
+      - PGRST_DB_SCHEMA=api
+      - PGRST_DB_ANON_ROLE=web_anon
+    restart: always
