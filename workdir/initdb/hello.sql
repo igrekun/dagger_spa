@@ -1,365 +1,306 @@
+-- Create a simple team task tracker database for PostgREST and HTMX
 CREATE DOMAIN "text/html" AS TEXT;
 
--- Create web_anon role for unauthenticated access
-CREATE ROLE web_anon NOLOGIN;
-GRANT web_anon TO postgres; -- Grant to your database user (Replace postgres if needed)
+-- Create extension for UUID generation
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
--- Create api schema
-CREATE SCHEMA api;
-GRANT USAGE ON SCHEMA api TO web_anon;
+-- Create schema for our application
+CREATE SCHEMA IF NOT EXISTS app;
 
--- Set search path (Consider setting this per role or database for better isolation)
--- SET search_path TO api, public;
--- Recommended approach: Set search_path for the role
-ALTER ROLE web_anon SET search_path = api, public;
-
--- Create messages table in the api schema
-CREATE TABLE api.messages (
+-- Create basic tables
+CREATE TABLE app.teams (
     id SERIAL PRIMARY KEY,
-    content TEXT NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    name TEXT NOT NULL,
+    description TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Add some sample data
-INSERT INTO api.messages (content) VALUES
-('Hello, World!'),
-('¡Hola, Mundo!'),
-('Bonjour, Monde!'),
-('Hallo, Welt!'),
-('Ciao, Mondo!');
+CREATE TABLE app.users (
+    id SERIAL PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    full_name TEXT NOT NULL,
+    email TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    team_id INTEGER REFERENCES app.teams(id),
+    is_admin BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_login TIMESTAMPTZ
+);
 
--- Grant access to web_anon role for the messages table
-GRANT SELECT, INSERT, UPDATE, DELETE ON api.messages TO web_anon;
-GRANT USAGE ON SEQUENCE api.messages_id_seq TO web_anon;
+CREATE TABLE app.task_status (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    color TEXT NOT NULL, -- for UI color-coding
+    sequence INTEGER NOT NULL -- for ordering
+);
 
--- Create function to get all messages as HTML
-CREATE OR REPLACE FUNCTION api.get_messages_html()
+CREATE TABLE app.tasks (
+    id SERIAL PRIMARY KEY,
+    title TEXT NOT NULL,
+    description TEXT,
+    status_id INTEGER NOT NULL REFERENCES app.task_status(id),
+    assigned_to INTEGER REFERENCES app.users(id),
+    created_by INTEGER NOT NULL REFERENCES app.users(id),
+    team_id INTEGER NOT NULL REFERENCES app.teams(id),
+    due_date DATE,
+    priority INTEGER NOT NULL DEFAULT 2, -- 1=low, 2=medium, 3=high
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE app.comments (
+    id SERIAL PRIMARY KEY,
+    task_id INTEGER NOT NULL REFERENCES app.tasks(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES app.users(id),
+    content TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Create trigger function to update updated_at timestamp
+CREATE OR REPLACE FUNCTION app.update_timestamp()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Create trigger for tasks
+CREATE TRIGGER set_timestamp
+BEFORE UPDATE ON app.tasks
+FOR EACH ROW
+EXECUTE FUNCTION app.update_timestamp();
+
+-- Insert basic task statuses
+INSERT INTO app.task_status (name, color, sequence) VALUES 
+('To Do', '#3498db', 1),
+('In Progress', '#f39c12', 2),
+('Review', '#9b59b6', 3),
+('Done', '#2ecc71', 4);
+
+-- Create Views
+CREATE VIEW app.tasks_with_details AS
+SELECT 
+    t.id,
+    t.title,
+    t.description,
+    ts.name AS status,
+    ts.color AS status_color,
+    t.priority,
+    assigned.username AS assigned_to_username,
+    assigned.full_name AS assigned_to_name,
+    creator.username AS created_by_username,
+    creator.full_name AS created_by_name,
+    team.name AS team_name,
+    t.due_date,
+    t.created_at,
+    t.updated_at
+FROM 
+    app.tasks t
+    JOIN app.task_status ts ON t.status_id = ts.id
+    JOIN app.users creator ON t.created_by = creator.id
+    JOIN app.teams team ON t.team_id = team.id
+    LEFT JOIN app.users assigned ON t.assigned_to = assigned.id;
+
+-- Create auth related structures (simplified for demo)
+CREATE ROLE web_anon NOLOGIN;
+CREATE ROLE authenticator NOINHERIT LOGIN PASSWORD 'mysecretpassword';
+GRANT web_anon TO authenticator;
+
+CREATE ROLE app_user NOLOGIN;
+GRANT USAGE ON SCHEMA app TO app_user;
+GRANT SELECT ON ALL TABLES IN SCHEMA app TO app_user;
+GRANT INSERT, UPDATE, DELETE ON app.tasks, app.comments TO app_user;
+GRANT USAGE ON ALL SEQUENCES IN SCHEMA app TO app_user;
+
+-- Sample data
+INSERT INTO app.teams (name, description) VALUES 
+('Engineering', 'Software development team'),
+('Marketing', 'Marketing and promotion team'),
+('Support', 'Customer support team');
+
+-- Sample users (password_hash would normally be properly hashed, using 'hash_' for demo)
+INSERT INTO app.users (username, full_name, email, password_hash, team_id, is_admin) VALUES
+('admin', 'System Administrator', 'admin@example.com', 'hash_adminpass', 1, TRUE),
+('jsmith', 'John Smith', 'john@example.com', 'hash_johnpass', 1, FALSE),
+('agarcia', 'Ana Garcia', 'ana@example.com', 'hash_anapass', 1, FALSE),
+('bwilson', 'Bob Wilson', 'bob@example.com', 'hash_bobpass', 2, FALSE),
+('clee', 'Charlie Lee', 'charlie@example.com', 'hash_charliepass', 3, FALSE);
+
+-- Sample tasks
+INSERT INTO app.tasks (title, description, status_id, assigned_to, created_by, team_id, due_date, priority) VALUES
+('Implement login page', 'Create the user authentication interface', 1, 2, 1, 1, CURRENT_DATE + INTERVAL '7 days', 2),
+('Fix navigation bug', 'The dropdown menu disappears on mobile view', 2, 3, 1, 1, CURRENT_DATE + INTERVAL '2 days', 3),
+('Create marketing email', 'Design the monthly newsletter', 1, 4, 1, 2, CURRENT_DATE + INTERVAL '5 days', 2),
+('Update documentation', 'Add new API endpoints to the docs', 3, 2, 3, 1, CURRENT_DATE + INTERVAL '3 days', 1),
+('Respond to customer inquiry', 'Check ticket #1234 and respond', 4, 5, 1, 3, CURRENT_DATE - INTERVAL '1 day', 2);
+
+-- Sample comments
+INSERT INTO app.comments (task_id, user_id, content) VALUES
+(1, 1, 'Please follow the design mockups in Figma'),
+(1, 2, 'I''ll start working on this tomorrow'),
+(2, 3, 'I found the issue, it''s a CSS z-index conflict'),
+(4, 2, 'Documentation has been updated, please review'),
+(5, 5, 'Customer has been contacted and issue resolved');
+
+-- Create functions that return HTML for HTMX
+
+-- Function to get all tasks in HTML format
+CREATE OR REPLACE FUNCTION app.get_tasks_html()
 RETURNS TEXT AS $$
 DECLARE
     result TEXT;
 BEGIN
     SELECT STRING_AGG(
-        '<tr id="message-' || id || '">' ||
-        '<td>' || id || '</td>' ||
-        '<td>' || content || '</td>' ||
-        '<td>' || to_char(created_at, 'YYYY-MM-DD HH24:MI:SS') || '</td>' ||
-        '<td>' ||
-            '<button class="btn-edit" ' ||
-            'hx-get="/rpc/get_edit_form_html?p_id=' || id || '" ' || -- Changed param name for consistency
-            'hx-target="#message-' || id || '" ' ||
-            'hx-swap="outerHTML" ' ||
-            'hx-headers=''{"Accept": "text/html"}''>' || -- Simplified quoting
-            'Edit</button> ' ||
-
-            '<button class="btn-delete" ' ||
-            'hx-delete="/messages?id=eq.' || id || '" ' ||
-            'hx-target="#message-' || id || '" ' ||
-            'hx-swap="outerHTML" ' || -- Consider hx-swap="delete" or handling removal in JS/another request
-            'hx-confirm="Are you sure you want to delete this message?">' ||
-            'Delete</button>' ||
-        '</td>' ||
-        '</tr>',
-        E'\n' -- Standard way to represent newline in STRING_AGG
-    )
-    INTO result
-    FROM api.messages
-    ORDER BY id;
-
-    RETURN result;
-END;
-$$ LANGUAGE plpgsql STABLE SECURITY DEFINER; -- Added STABLE and SECURITY DEFINER
-
--- Add comment to specify the content type for this function
-COMMENT ON FUNCTION api.get_messages_html() IS 'description: Get all messages as HTML, @response_type text/html';
-
-GRANT EXECUTE ON FUNCTION api.get_messages_html() TO web_anon;
-
--- Create function to get a single message row as HTML
-CREATE OR REPLACE FUNCTION api.get_message_row_html(p_id INTEGER)
-RETURNS TEXT AS $$
-DECLARE
-    result TEXT;
-BEGIN
-    SELECT
-        '<tr id="message-' || id || '">' ||
-        '<td>' || id || '</td>' ||
-        '<td>' || content || '</td>' ||
-        '<td>' || to_char(created_at, 'YYYY-MM-DD HH24:MI:SS') || '</td>' ||
-        '<td>' ||
-            '<button class="btn-edit" ' ||
-            'hx-get="/rpc/get_edit_form_html?p_id=' || id || '" ' || -- Changed param name
-            'hx-target="#message-' || id || '" ' ||
-            'hx-swap="outerHTML" ' ||
-            'hx-headers=''{"Accept": "text/html"}''>' || -- Simplified quoting
-            'Edit</button> ' ||
-
-            '<button class="btn-delete" ' ||
-            'hx-delete="/messages?id=eq.' || id || '" ' ||
-            'hx-target="#message-' || id || '" ' ||
-            'hx-swap="outerHTML" ' ||
-            'hx-confirm="Are you sure you want to delete this message?">' ||
-            'Delete</button>' ||
-        '</td>' ||
-        '</tr>'
-    INTO result
-    FROM api.messages
-    WHERE id = p_id;
-
-    RETURN result;
-END;
-$$ LANGUAGE plpgsql STABLE SECURITY DEFINER; -- Added STABLE and SECURITY DEFINER
-
--- Add comment to specify the content type for this function
-COMMENT ON FUNCTION api.get_message_row_html(INTEGER) IS 'description: Get HTML for a single message row, @response_type text/html';
-
-GRANT EXECUTE ON FUNCTION api.get_message_row_html(INTEGER) TO web_anon;
-
--- Create function to add a new message and return HTML row
-CREATE OR REPLACE FUNCTION api.add_message_html(p_content TEXT)
-RETURNS TEXT AS $$
-DECLARE
-    new_id INTEGER;
-BEGIN
-    INSERT INTO api.messages (content)
-    VALUES (p_content)
-    RETURNING id INTO new_id;
-
-    RETURN api.get_message_row_html(new_id); -- Call the function with schema prefix
-END;
-$$ LANGUAGE plpgsql VOLATILE SECURITY DEFINER; -- Added VOLATILE and SECURITY DEFINER
-
--- Add comment to specify the content type for this function
-COMMENT ON FUNCTION api.add_message_html(TEXT) IS 'description: Add a new message and return its HTML, @response_type text/html';
-
-GRANT EXECUTE ON FUNCTION api.add_message_html(TEXT) TO web_anon;
-
--- Create function to get an edit form for a message
-CREATE OR REPLACE FUNCTION api.get_edit_form_html(p_id INTEGER)
-RETURNS TEXT AS $$
-DECLARE
-    v_content TEXT;
-BEGIN
-    SELECT content INTO v_content FROM api.messages WHERE id = p_id;
-
-    RETURN
-        '<tr id="message-' || p_id || '-edit">' ||
-        '<td>' || p_id || '</td>' ||
-        '<td colspan="2">' ||
-            '<form ' ||
-            'hx-post="/rpc/update_message_html" ' || -- Changed to POST to align with function call convention
-            'hx-target="#message-' || p_id || '-edit" ' ||
-            'hx-swap="outerHTML" ' ||
-            'hx-headers=''{"Accept": "text/html"}''>' || -- Simplified quoting
-                '<input type="hidden" name="p_id" value="' || p_id || '">' ||
-                '<input type="text" name="p_content" value="' || COALESCE(v_content, '') || '" style="width: 100%">' || -- Added COALESCE and fixed potential HTML injection (proper escaping needed for production)
-                '<button type="submit">Save</button> ' ||
-                '<button type="button" ' ||
-                'hx-get="/rpc/get_message_row_html?p_id=' || p_id || '" ' ||
-                'hx-target="#message-' || p_id || '-edit" ' ||
-                'hx-swap="outerHTML" ' ||
-                'hx-headers=''{"Accept": "text/html"}''>' || -- Simplified quoting
-                'Cancel</button>' ||
-            '</form>' ||
-        '</td>' ||
-        '<td></td>' || -- Placeholder for actions column alignment
-        '</tr>';
-END;
-$$ LANGUAGE plpgsql STABLE SECURITY DEFINER; -- Added STABLE and SECURITY DEFINER
-
--- Add comment to specify the content type for this function
-COMMENT ON FUNCTION api.get_edit_form_html(INTEGER) IS 'description: Get HTML form for editing a message, @response_type text/html';
-
-GRANT EXECUTE ON FUNCTION api.get_edit_form_html(INTEGER) TO web_anon;
-
--- Create function to update a message and return the HTML row
--- Note: Using POST for RPC is generally preferred for actions with side-effects.
--- PostgREST expects parameters for POST RPC calls in the JSON body.
--- This function expects named parameters which map well to form submissions if
--- using application/x-www-form-urlencoded or if HTMX sends JSON matching param names.
-CREATE OR REPLACE FUNCTION api.update_message_html(p_id INTEGER, p_content TEXT)
-RETURNS TEXT AS $$
-BEGIN
-    UPDATE api.messages
-    SET content = p_content
-    WHERE id = p_id;
-
-    RETURN api.get_message_row_html(p_id); -- Call the function with schema prefix
-END;
-$$ LANGUAGE plpgsql VOLATILE SECURITY DEFINER; -- Added VOLATILE and SECURITY DEFINER
-
--- Add comment to specify the content type for this function
-COMMENT ON FUNCTION api.update_message_html(INTEGER, TEXT) IS 'description: Update a message and return its HTML, @response_type text/html';
-
-GRANT EXECUTE ON FUNCTION api.update_message_html(INTEGER, TEXT) TO web_anon;
-
--- Create function to search messages and return HTML
-CREATE OR REPLACE FUNCTION api.search_messages_html(p_query TEXT)
-RETURNS TEXT AS $$
-DECLARE
-    result TEXT;
-BEGIN
-    SELECT STRING_AGG(
-        '<tr id="message-' || id || '">' ||
-        '<td>' || id || '</td>' ||
-        '<td>' || content || '</td>' ||
-        '<td>' || to_char(created_at, 'YYYY-MM-DD HH24:MI:SS') || '</td>' ||
-        '<td>' ||
-            '<button class="btn-edit" ' ||
-            'hx-get="/rpc/get_edit_form_html?p_id=' || id || '" ' || -- Changed param name
-            'hx-target="#message-' || id || '" ' ||
-            'hx-swap="outerHTML" ' ||
-            'hx-headers=''{"Accept": "text/html"}''>' || -- Simplified quoting
-            'Edit</button> ' ||
-
-            '<button class="btn-delete" ' ||
-            'hx-delete="/messages?id=eq.' || id || '" ' ||
-            'hx-target="#message-' || id || '" ' ||
-            'hx-swap="outerHTML" ' ||
-            'hx-confirm="Are you sure you want to delete this message?">' ||
-            'Delete</button>' ||
-        '</td>' ||
-        '</tr>',
+        '<tr id="task-' || t.id || '" class="task-row">
+            <td>' || t.id || '</td>
+            <td>' || t.title || '</td>
+            <td><span class="status-badge" style="background-color: ' || t.status_color || ';">' || t.status || '</span></td>
+            <td>' || COALESCE(t.assigned_to_name, 'Unassigned') || '</td>
+            <td>' || CASE WHEN t.priority = 1 THEN 'Low' WHEN t.priority = 2 THEN 'Medium' ELSE 'High' END || '</td>
+            <td>' || to_char(t.due_date, 'YYYY-MM-DD') || '</td>
+            <td>
+                <button class="btn-view" hx-get="/rpc/get_task_details_html?task_id=' || t.id || '" 
+                        hx-target="#task-detail-container" hx-trigger="click">View</button>
+                <button class="btn-edit" hx-get="/rpc/get_task_edit_form_html?task_id=' || t.id || '" 
+                        hx-target="#task-detail-container" hx-trigger="click">Edit</button>
+                <button class="btn-delete" hx-delete="/tasks?id=eq.' || t.id || '" 
+                        hx-confirm="Are you sure you want to delete this task?" 
+                        hx-target="#task-' || t.id || '" hx-swap="outerHTML">Delete</button>
+            </td>
+        </tr>',
         E'\n'
-    )
-    INTO result
-    FROM api.messages
-    WHERE content ILIKE '%' || p_query || '%'
-    ORDER BY id;
-
-    RETURN COALESCE(result, '<tr><td colspan="4">No messages found matching search.</td></tr>');
+    ) INTO result
+    FROM app.tasks_with_details t
+    ORDER BY t.due_date, t.priority DESC;
+    
+    RETURN COALESCE(result, '<tr><td colspan="7">No tasks found</td></tr>');
 END;
-$$ LANGUAGE plpgsql STABLE SECURITY DEFINER; -- Added STABLE and SECURITY DEFINER
+$$ LANGUAGE plpgsql;
 
--- Add comment to specify the content type for this function
-COMMENT ON FUNCTION api.search_messages_html(TEXT) IS 'description: Search messages and return results as HTML, @response_type text/html';
-
-GRANT EXECUTE ON FUNCTION api.search_messages_html(TEXT) TO web_anon;
-
--- Create function to get template for a full HTML page
--- NOTE: Serving full pages like this via RPC is possible but less common.
--- Often, a static HTML file loads the initial structure, and HTMX fetches fragments.
-CREATE OR REPLACE FUNCTION api.get_index_html()
+-- Function to get tasks filtered by status
+CREATE OR REPLACE FUNCTION app.get_tasks_by_status_html(status_name TEXT)
 RETURNS TEXT AS $$
+DECLARE
+    result TEXT;
 BEGIN
-    RETURN '<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hello World - PostgREST + HTMX</title>
-    <script src="https://unpkg.com/htmx.org@1.9.10"></script> <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; max-width: 800px; margin: 20px auto; padding: 20px; background-color: #f9f9f9; color: #333; }
-        table { width: 100%; border-collapse: collapse; margin: 20px 0; background-color: #fff; box-shadow: 0 2px 3px rgba(0,0,0,0.1); }
-        th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
-        th { background-color: #e9e9e9; font-weight: bold; }
-        tr:nth-child(even) { background-color: #f2f2f2; }
-        form { margin: 20px 0; padding: 15px; background-color: #fff; box-shadow: 0 2px 3px rgba(0,0,0,0.1); border-radius: 4px; }
-        input[type="text"], input[type="search"] { padding: 10px; width: calc(70% - 22px); margin-right: 10px; border: 1px solid #ccc; border-radius: 4px; }
-        button { padding: 10px 15px; color: white; border: none; cursor: pointer; border-radius: 4px; transition: background-color 0.2s ease; }
-        button[type="submit"] { background-color: #4CAF50; }
-        button[type="submit"]:hover { background-color: #45a049; }
-        button[type="button"] { background-color: #aaa; }
-        button[type="button"]:hover { background-color: #888; }
-        .btn-edit { background-color: #2196F3; margin-right: 5px; }
-        .btn-edit:hover { background-color: #0b7dda; }
-        .btn-delete { background-color: #f44336; }
-        .btn-delete:hover { background-color: #da190b; }
-        .htmx-indicator { display: none; margin-left: 10px; font-style: italic; color: #555; }
-        .htmx-request .htmx-indicator { display: inline; }
-        .htmx-request.htmx-indicator { display: inline; } /* For elements that become indicators */
-        footer { margin-top: 30px; text-align: center; color: #777; font-size: 0.9em; }
-        h1, h2 { color: #333; border-bottom: 1px solid #eee; padding-bottom: 5px; }
-    </style>
-</head>
-<body>
-    <h1>Hello World - PostgREST + HTMX Demo</h1>
-
-    <h2>Add New Message</h2>
-    <form hx-post="/rpc/add_message_html"
-          hx-target="#messages-tbody"
-          hx-swap="beforeend"
-          hx-headers=''{"Accept": "text/html", "Prefer": "return=representation"}''
-          hx-on::after-request="if(event.detail.successful) this.reset()"> <input type="text" name="p_content" placeholder="Enter your message" required>
-        <button type="submit">Add Message</button>
-        <span class="htmx-indicator">Adding...</span>
-    </form>
-
-    <h2>Search Messages</h2>
-    <input type="search" name="p_query"
-           placeholder="Search messages..."
-           hx-get="/rpc/search_messages_html"
-           hx-trigger="keyup changed delay:500ms, search"
-           hx-target="#messages-tbody"
-           hx-swap="innerHTML"
-           hx-headers=''{"Accept": "text/html"}''
-           hx-indicator="#search-indicator" />
-    <span id="search-indicator" class="htmx-indicator">Searching...</span>
-
-    <h2>Messages</h2>
-    <table>
-        <thead>
-            <tr>
-                <th>ID</th>
-                <th>Message</th>
-                <th>Created At</th>
-                <th>Actions</th>
-            </tr>
-        </thead>
-        <tbody id="messages-tbody" hx-get="/rpc/get_messages_html" hx-trigger="load" hx-headers=''{"Accept": "text/html"}'' hx-indicator="#loading-indicator">
-            <tr id="loading-indicator" class="htmx-indicator">
-                <td colspan="4">Loading messages...</td>
-            </tr>
-            </tbody>
-    </table>
-
-    <hr>
-    <footer>
-        <p>Built with PostgreSQL, PostgREST, and HTMX</p>
-    </footer>
-</body>
-</html>';
+    SELECT STRING_AGG(
+        '<tr id="task-' || t.id || '" class="task-row">
+            <td>' || t.id || '</td>
+            <td>' || t.title || '</td>
+            <td><span class="status-badge" style="background-color: ' || t.status_color || ';">' || t.status || '</span></td>
+            <td>' || COALESCE(t.assigned_to_name, 'Unassigned') || '</td>
+            <td>' || CASE WHEN t.priority = 1 THEN 'Low' WHEN t.priority = 2 THEN 'Medium' ELSE 'High' END || '</td>
+            <td>' || to_char(t.due_date, 'YYYY-MM-DD') || '</td>
+            <td>
+                <button class="btn-view" hx-get="/rpc/get_task_details_html?task_id=' || t.id || '" 
+                        hx-target="#task-detail-container" hx-trigger="click">View</button>
+                <button class="btn-edit" hx-get="/rpc/get_task_edit_form_html?task_id=' || t.id || '" 
+                        hx-target="#task-detail-container" hx-trigger="click">Edit</button>
+                <button class="btn-delete" hx-delete="/tasks?id=eq.' || t.id || '" 
+                        hx-confirm="Are you sure you want to delete this task?" 
+                        hx-target="#task-' || t.id || '" hx-swap="outerHTML">Delete</button>
+            </td>
+        </tr>',
+        E'\n'
+    ) INTO result
+    FROM app.tasks_with_details t
+    WHERE t.status = status_name
+    ORDER BY t.due_date, t.priority DESC;
+    
+    RETURN COALESCE(result, '<tr><td colspan="7">No tasks found with status: ' || status_name || '</td></tr>');
 END;
-$$ LANGUAGE plpgsql STABLE SECURITY DEFINER; -- Added STABLE and SECURITY DEFINER
+$$ LANGUAGE plpgsql;
 
--- Add comment to specify the content type for this function
-COMMENT ON FUNCTION api.get_index_html() IS 'description: Get the main HTML page, @response_type text/html';
+-- Function to get task details HTML
+CREATE OR REPLACE FUNCTION app.get_task_details_html(task_id INTEGER)
+RETURNS TEXT AS $$
+DECLARE
+    task_record app.tasks_with_details%ROWTYPE;
+    comments_html TEXT;
+    result TEXT;
+BEGIN
+    -- Get task details
+    SELECT * INTO task_record
+    FROM app.tasks_with_details
+    WHERE id = task_id;
+    
+    IF NOT FOUND THEN
+        RETURN '<div class="error-message">Task not found</div>';
+    END IF;
+    
+    -- Get comments
+    SELECT STRING_AGG(
+        '<div class="comment">
+            <div class="comment-header">
+                <span class="comment-author">' || u.full_name || '</span>
+                <span class="comment-date">' || to_char(c.created_at, 'YYYY-MM-DD HH:MI') || '</span>
+            </div>
+            <div class="comment-content">' || c.content || '</div>
+        </div>',
+        E'\n'
+    ) INTO comments_html
+    FROM app.comments c
+    JOIN app.users u ON c.user_id = u.id
+    WHERE c.task_id = task_id
+    ORDER BY c.created_at;
+    
+    -- Construct the HTML
+    result := '
+    <div class="task-details">
+        <h2>' || task_record.title || '</h2>
+        <div class="task-metadata">
+            <div class="metadata-item">
+                <strong>Status:</strong> <span class="status-badge" style="background-color: ' || task_record.status_color || ';">' || task_record.status || '</span>
+            </div>
+            <div class="metadata-item">
+                <strong>Assigned to:</strong> ' || COALESCE(task_record.assigned_to_name, 'Unassigned') || '
+            </div>
+            <div class="metadata-item">
+                <strong>Priority:</strong> ' || CASE WHEN task_record.priority = 1 THEN 'Low' WHEN task_record.priority = 2 THEN 'Medium' ELSE 'High' END || '
+            </div>
+            <div class="metadata-item">
+                <strong>Due Date:</strong> ' || to_char(task_record.due_date, 'YYYY-MM-DD') || '
+            </div>
+            <div class="metadata-item">
+                <strong>Created By:</strong> ' || task_record.created_by_name || '
+            </div>
+            <div class="metadata-item">
+                <strong>Team:</strong> ' || task_record.team_name || '
+            </div>
+        </div>
+        
+        <div class="task-description">
+            <h3>Description</h3>
+            <p>' || COALESCE(task_record.description, 'No description provided.') || '</p>
+        </div>
+        
+        <div class="task-comments">
+            <h3>Comments</h3>
+            ' || COALESCE(comments_html, '<p>No comments yet.</p>') || '
+        </div>
+        
+        <div class="add-comment-form">
+            <h3>Add Comment</h3>
+            <form hx-post="/rpc/add_comment_html" hx-target=".task-comments" hx-swap="innerHTML">
+                <input type="hidden" name="task_id" value="' || task_id || '">
+                <textarea name="content" placeholder="Enter your comment" required></textarea>
+                <button type="submit">Add Comment</button>
+            </form>
+        </div>
+        
+        <div class="task-actions">
+            <button class="btn-edit" hx-get="/rpc/get_task_edit_form_html?task_id=' || task_id || '" 
+                    hx-target="#task-detail-container" hx-trigger="click">Edit Task</button>
+            <button class="btn-back" hx-get="/rpc/get_tasks_html" 
+                    hx-target="#tasks-table-body" hx-trigger="click">Back to List</button>
+        </div>
+    </div>';
+    
+    RETURN result;
+END;
+$$ LANGUAGE plpgsql;
 
-GRANT EXECUTE ON FUNCTION api.get_index_html() TO web_anon;
+-- Function to get task edit form HTML
+CREATE OR REPLACE FUNCTION app.get
 
--- COMMENT ON ROLE web_anon IS 'Role for accessing the API anonymously.'; -- Optional comment
-
--- Create RLS policy for messages table in the api schema
--- Ensure the table owner is NOT the web_anon role for RLS to apply correctly.
-ALTER TABLE api.messages ENABLE ROW LEVEL SECURITY;
-
--- Allow web_anon to see all messages. Customize as needed.
-CREATE POLICY messages_select_policy ON api.messages
-    FOR SELECT
-    TO web_anon -- Apply policy specifically to web_anon
-    USING (true);
-
--- Allow web_anon to insert any message. Customize as needed.
-CREATE POLICY messages_insert_policy ON api.messages
-    FOR INSERT
-    TO web_anon -- Apply policy specifically to web_anon
-    WITH CHECK (true);
-
--- Allow web_anon to update any message. Customize as needed.
-CREATE POLICY messages_update_policy ON api.messages
-    FOR UPDATE
-    TO web_anon -- Apply policy specifically to web_anon
-    USING (true)
-    WITH CHECK (true);
-
--- Allow web_anon to delete any message. Customize as needed.
-CREATE POLICY messages_delete_policy ON api.messages
-    FOR DELETE
-    TO web_anon -- Apply policy specifically to web_anon
-    USING (true);
-
--- Note: SECURITY DEFINER functions bypass RLS unless you re-set the role inside.
--- For this example where web_anon needs full access via functions,
--- granting direct table permissions + SECURITY DEFINER is okay,
--- but be aware SECURITY DEFINER functions run as the function owner.
--- If the function owner has more privileges than web_anon, it's a potential security risk.
--- An alternative is SECURITY INVOKER functions relying solely on RLS and direct grants.

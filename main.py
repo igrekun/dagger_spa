@@ -12,14 +12,17 @@ def main(prompt: str):
 
     client = Anthropic(api_key=api_key)
 
+    
     message = client.messages.create(
         model="claude-3-7-sonnet-20250219",
         max_tokens=4096,
         messages=[
             {"role": "user", "content":
-                "Generate a ready to use SQL script for an application based on PostgREST and HTMX:\n"
-                + prompt +
-"""               LLM Guide: Generating PostgREST + HTMX Applications
+                """
+                Generate a ready to use SQL script for an application based on PostgREST and HTMX:
+                'Generate a SPA for a simple team task tracker'
+                
+                LLM Guide: Generating PostgREST + HTMX Applications
 
     Goal: Generate HTML code using HTMX attributes to interact with a PostgreSQL database exposed via a PostgREST API.
 
@@ -187,15 +190,24 @@ def main(prompt: str):
     Remind the user about configuring PostgreSQL security (RLS, Roles).
                 
                 Generate a SQL script that populates the database with the application mentioned above.
-                Output the SQL directly into the <sql> tag.
+                *** Output the SQL directly into the <sql></sql> tag. ***
+                
+                MAKE SURE YOU WONT ESCAPE ANY STRINGS IN <sql>..</sql> TAG. Make it ready for execution on sql server.
+                
+                YOUR OUTPUT MUST BE IN THE FOLLOWING FORMAT:
+                <reasoning>
+                ...
+                </reasoning>
+                <sql>
+                ...
+                </sql>
                 """
             }
         ]
     )
 
     # Get the content from the message
-    llm_output = str(message.content)
-    print(llm_output)
+    llm_output = str(message.content[0].text)
 
     import re
     SQL_SCRIPT = re.search(r'<sql>(.*?)</sql>', llm_output, re.DOTALL)
@@ -203,7 +215,9 @@ def main(prompt: str):
         SQL_SCRIPT = SQL_SCRIPT.group(1)
     else:
         SQL_SCRIPT = ""
-        
+
+    print("CREATE DOMAIN "text/html" AS TEXT;")
+    print()        
     print(SQL_SCRIPT)
 
 if __name__ == "__main__":
